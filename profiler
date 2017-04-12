@@ -1,0 +1,189 @@
+#!/bin/bash
+DIR=/usr/bin
+DIR=/root/profiler
+LOGDIR=/tmp/profiler
+PROCESS_LIST=/tmp/pid-list
+
+if [ ! -d "$LOGDIR" ]; then
+    mkdir $LOGDIR
+    chmod 666 $LOGDIR
+    touch $PROCESS_LIST
+    chmod 666 $PROCESS_LIST
+fi
+
+if [ ! -f $PROCESS_LIST ]; then
+    touch $PROCESS_LIST
+    chmod 666 $PROCESS_LIST
+fi
+
+usage(){
+    echo ""
+    echo "Usage: $0 -p=pid -a|-r [-n=name -f=60]"
+    echo "       $0 -s"
+    echo ""
+    echo "(e.g $0 -p=2075 -a -n=route-stats)"
+    echo ""
+    echo "List of Parameters:"
+    echo ""
+    echo "-p|--pid        PID number"
+    echo "-a|--add        Add PID for monitoring"
+    echo "-r|--remove     Remove PID from monitoring"
+    echo "-n|--name       Name for the PID"
+    echo "-f|--frequency  How often collect save monitoning info in sec. (Default 300)"
+    echo "-s|--show       Show monitored PID"
+    echo "-h|--help       Help"
+    echo ""
+    exit 1
+}
+
+cleanlist(){
+    rm -rf /tmp/list.tmp
+    touch /tmp/list.tmp 
+    while IFS='' read -r line || [[ -n "$line" ]]
+    do 
+        check=`echo $line | awk '{print "ps -p",$2}'| bash | grep -v PID | wc -l`
+        if [ "$check" -eq "1" ]
+        then
+            echo $line >> /tmp/list.tmp
+        fi
+    done < /tmp/pid-list
+    mv /tmp/list.tmp $PROCESS_LIST
+}
+
+whitespace="[[:space:]]"
+
+while [[ $# > 0 ]]
+do
+
+    i="$1"
+    if [[ $i =~ $whitespace ]]
+    then
+        i=\"$i\"
+    fi
+    shift
+    
+    if [[ $i == *=* ]]
+    then
+        if [[ $i =~ $whitespace ]]
+        then        
+            option=`echo $i | sed 's/"//g'`
+        else    
+            option=$i
+        fi
+    else
+        if [ "$i" == "-s" ] || [ "$i" == "--show" ] || [ "$i" == "-a" ] || [ "$i" == "--add" ] || [ "$i" == "-r" ] || [ "$i" == "--remove" ] || [ "$i" == "-h" ] || [ "$i" == "--help" ]
+        then
+            option=$i
+        else
+            value="$1"
+            shift
+            option=`echo $i=$value`
+        fi
+    fi
+
+    case $option in
+        -p=*|--pid=*)
+        PID=`echo $option | sed 's/[-a-zA-Z0-9]*=//'`
+        ;;
+        -n=*|--name=*)
+        NAME=`echo $option | sed 's/[-a-zA-Z0-9]*=//'`
+        ;;
+        -f=*|--frequency=*)
+        FREQUENCY=`echo $option | sed 's/[-a-zA-Z0-9]*=//'`
+        ;;
+        -a|--add)
+        PID_ADD=True
+        ;;
+        -r|--remove)
+        PID_REMOVE=True
+        ;;
+        -s|--show)
+        SHOW=True
+        ;;
+        -h|--help)
+        usage
+        ;;
+        --default)
+        DEFAULT=YES
+        ;;
+        *)
+                # unknown option
+        ;;
+    esac
+done
+
+if [ "$PID" == "" ] && [ "$SHOW" == "" ]
+then
+    usage
+else
+    if [ "$SHOW" == "" ]
+    then
+        check=`ps -p $PID | grep -v PID | wc -l`
+        if [ "$check" -eq "0" ]
+        then
+            echo "Invalid PID. Process does not exist"
+            exit 1
+        else
+            find=`cat $PROCESS_LIST | awk -v pid=$PID 'BEGIN{found=0}{if($1==pid){found=$2}}END{print found}'`
+            if [ "$find" -eq "0" ]
+            then
+                NOTINLIST=True
+            else
+                if [ "$PID_REMOVE" == "" ]
+                then
+                    echo "Process already in monitoring list"
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+fi
+
+if [ "$NAME" == "" ]
+then
+    LOGNAME=".log"
+else
+    LOGNAME="-"$NAME".log"
+fi
+LOGFILE=$LOGDIR"/pid-"${PID}${LOGNAME}
+
+if [ "$FREQUENCY" == "" ]
+then
+    FREQUENCY=300
+fi
+
+if [ "$PID_ADD" == "" ]
+then
+    if [ "$PID_REMOVE" == "" ]
+    then
+        if [ "$SHOW" == "" ]
+        then
+    echo HERE
+            usage
+        else
+            cleanlist
+            echo
+            echo "------------------------------"
+            echo -e "PID\tMonID\tName"
+            cat $PROCESS_LIST | awk '{print $1"\t"$2"\t"$3}'
+            echo "------------------------------"
+            echo
+        fi
+    else
+        find=`cat $PROCESS_LIST | awk -v pid=$PID 'BEGIN{found=0}{if($1==pid || $2==pid){found=$2}}END{print found}'`
+        if [ "$find" -eq "0" ]
+        then
+            echo "Process/Monitor ID not found"
+        else
+            echo "Removing PID "$PID" from monitoring"
+            kill $find
+            cleanlist
+        fi
+    fi
+else
+    echo "Adding PID "$PID" for monitoring"
+    echo "Collecting data every "$FREQUENCY" seconds in "$LOGFILE
+    nohup $DIR/profiler.py $PID $FREQUENCY $NAME >/dev/null 2>&1&
+    MONID=$!
+    echo -e "${PID}\t${MONID}\t${NAME}" >> $PROCESS_LIST
+fi
